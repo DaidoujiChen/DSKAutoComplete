@@ -14,10 +14,6 @@
 @interface DSKAutoCompleteQuickMenu ()
 
 @property (nonatomic, strong) NSArray *results;
-@property (nonatomic, strong) dispatch_semaphore_t semaphore;
-@property (nonatomic, strong) dispatch_queue_t pendingQueue;
-@property (nonatomic, strong) dispatch_queue_t workQueue;
-@property (nonatomic, assign) int pendingJobCount;
 
 @end
 
@@ -40,10 +36,6 @@
 	self.quickMenu.layer.borderColor = [UIColor grayColor].CGColor;
 	self.quickMenu.separatorStyle = UITableViewCellSeparatorStyleNone;
 	[self.quickMenu registerClass:[UITableViewCell class] forCellReuseIdentifier:@"DSKAutoCompleteQuickMenu"];
-
-	self.semaphore = dispatch_semaphore_create(1);
-	self.pendingQueue = [self queueCreate:"pendingQueue" dispatchAttr:DISPATCH_QUEUE_SERIAL];
-	self.workQueue = [self queueCreate:"workQueue" dispatchAttr:DISPATCH_QUEUE_SERIAL];
 }
 
 - (void)hidden {
@@ -55,40 +47,31 @@
 }
 
 - (void)refreshDataUsing:(NSMutableDictionary *)dataSource {
-	self.pendingJobCount++;
+	//長度大於零才搜尋
+	if ([self currentTextField].text.length > 0) {
+		//建立模糊搜尋語法。
+		NSPredicate *pred = [NSPredicate predicateWithFormat:[self predicateStr]];
 
-	dispatch_async(self.pendingQueue, ^{
-		dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
-		dispatch_async(self.workQueue, ^{
-			if ([self currentTextField].text.length != 0 && self.pendingJobCount == 1) {
-			    //用來保存需要的 key。
-			    NSMutableDictionary *cacheDic = [NSMutableDictionary dictionaryWithDictionary:dataSource];
-
-			    NSPredicate *pred = [NSPredicate predicateWithFormat:[self predicateStr]];
-			    [dataSource keysOfEntriesPassingTest: ^(id key, NSDictionary *info, BOOL *stop) {
-			        //模糊搜尋 array 裡的每個 string，count > 0 表示這個 key 是需要的。
-			        if ([info[@"tags"] filteredArrayUsingPredicate:pred].count > 0 && self.pendingJobCount == 1) {
-			            return YES;
-					}
-
-			        //模糊搜尋找不到，移除這個 key。
-			        [cacheDic removeObjectForKey:key];
-			        return NO;
-				}];
-
-			    if (self.pendingJobCount == 1 && cacheDic.allKeys > 0) {
-			        //將所有 key 按照權重排序。
-			        self.results = [self sortAllKeys:cacheDic];
-				}
+		NSMutableDictionary *cacheDic = [NSMutableDictionary dictionaryWithDictionary:dataSource];
+		[cacheDic enumerateKeysAndObjectsUsingBlock: ^(id key, id obj, BOOL *stop) {
+		    //搜尋 key 底下所有 value，count 等於零表示沒有搜尋到所以將其移除。
+		    if ([obj[@"tags"] filteredArrayUsingPredicate:pred].count == 0) {
+		        [cacheDic removeObjectForKey:key];
 			}
+		}];
 
-			//做最後確認
-			if ([self currentTextField].text.length == 0 || self.pendingJobCount > 1) {
-			    self.results = [NSArray array];
-			}
+		//取 dictionary 所有 key，大於零才做排序（按照權重排序）。
+		if (cacheDic.allKeys > 0) {
+			self.results = [self sortAllKeys:cacheDic];
+		}
+	}
 
-			[self updataUI];
-		});
+	dispatch_async(dispatch_get_main_queue(), ^{
+        //在最後做確認動作
+		if ([self currentTextField].text.length == 0) {
+		    self.results = [NSArray array];
+		}
+		[self.quickMenu reloadData];
 	});
 }
 
@@ -132,21 +115,12 @@
 }
 
 - (NSString *)predicateStr {
-	//建立模糊搜尋語法。
 	NSString *predicateStr = @"SELF like[cd] '*";
 	for (int i = 0; i < self.currentTextField.text.length; i++) {
 		predicateStr = [NSString stringWithFormat:@"%@%@*", predicateStr, [[self currentTextField].text substringWithRange:NSMakeRange(i, 1)]];
 	}
 	predicateStr = [NSString stringWithFormat:@"%@'", predicateStr];
 	return predicateStr;
-}
-
-- (void)updataUI {
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[self.quickMenu reloadData];
-		self.pendingJobCount--;
-		dispatch_semaphore_signal(self.semaphore);
-	});
 }
 
 #pragma mark - tableView Delegate
@@ -192,14 +166,6 @@
 		cell.textLabel.text = self.results[indexPath.row];
 	}
 	return cell;
-}
-
-#pragma mark - queue create method
-
-- (dispatch_queue_t)queueCreate:(const char *)label dispatchAttr:(dispatch_queue_attr_t)attr {
-	dispatch_queue_t queue = dispatch_queue_create(label, attr);
-	dispatch_queue_set_specific(queue, _cmd, (__bridge void *)queue, NULL);
-	return queue;
 }
 
 @end
